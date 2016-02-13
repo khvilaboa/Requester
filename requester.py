@@ -50,7 +50,7 @@ class Handler:
             elif name == "PARAMS":
                 params = self.parseParams(value)
 
-        return RequestUnit(method, url, params) if url <> "" else None
+        return RequestGroup(method, url, params) if url <> "" else None
 
     # Returns the params (in dictionary form) from the line that specifies them
     def parseParams(self, params_line):
@@ -60,12 +60,17 @@ class Handler:
             name, value = self.getPair(param, "=")
 
             match = re.match(r"\[\[(.*)\]\]", value)
-            if match:  # Special command
-                sc_name, sc_value = self.getPair(match.group(1), ":")
-                sc_name = sc_name.upper()
+            if match:  # Special commands
+                sc_spec = self.getPair(match.group(1), ":")
+                sc_name = sc_spec[0].upper()
+                sc_params = sc_spec[1:]
 
                 if sc_name == "FILE":  # TODO: Check if file exists
-                    params[name] = FileSource(sc_value)
+                    fileName = sc_params[0]
+                    params[name] = FileSource(fileName)
+                elif sc_name == "SEQ":
+                    seq = sc_params[0]
+                    params[name] = SeqSource(seq)
                 else:
                     pass  # TODO: raise Exception
             else:
@@ -84,7 +89,7 @@ class Handler:
 
 
 # Identifies a group of related requests
-class RequestUnit:
+class RequestGroup:
     def __init__(self, method, url, params):
         self.url = url
         self.method = method
@@ -153,6 +158,9 @@ class RequestUnit:
 class Source:
     __metaclass__ = ABCMeta
 
+    def __iter__(self):
+        return self
+
     @abstractmethod
     def next(self): pass
 
@@ -166,9 +174,6 @@ class FileSource(Source):
         self.fileName = fileName
         self.data = None
         self.pointer = 0
-
-    def __iter__(self):
-        return self
 
     def next(self):
         if self.data == None:  # Avoids to load the resource if its not used
@@ -191,6 +196,28 @@ class FileSource(Source):
     def reset(self):
         self.pointer = 0
 
+# Iterate over a sequence, specified with a initial, a final one (inclusive) and a step
+class SeqSource(Source):
+
+    def __init__(self, strDef):
+        try:
+            params = map(lambda x: int(x), strDef.split(","))
+            if len(params) <> 3: raise SyntaxError
+
+            self.ini, self.fin, self.step = params
+            self.pointer = self.ini - self.step
+        except SyntaxError:
+            raise SyntaxError("Secuencia no valida")
+
+    def next(self):
+        if self.pointer < self.fin:
+            self.pointer += self.step
+            return self.pointer
+        else:
+            raise StopIteration()
+
+    def reset(self):
+        self.pointer = self.ini - self.pointer
 
 
 # Iterate through all the combinations of the sources given
@@ -234,6 +261,7 @@ def toFile(name, content):
 # ------
 #  MAIN
 # ------
+
 if __name__ == "__main__":
     h = Handler(sys.argv[1])
     h.sendRequests()
