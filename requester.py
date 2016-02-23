@@ -37,6 +37,7 @@ class Handler:
         method = "GET"
         url = ""
         params = None
+        action = None
 
         for line in lines:
             # Get and format name and value of the command (ex: "METHOD : GET")
@@ -49,8 +50,10 @@ class Handler:
                 method = value.upper()
             elif name == "PARAMS":
                 params = self.parseParams(value)
+            elif name == "ACTION":
+                action = DownloadAction(url)
 
-        return RequestGroup(method, url, params) if url <> "" else None
+        return RequestGroup(method, url, params, action) if url <> "" else None
 
     # Returns the params (in dictionary form) from the line that specifies them
     def parseParams(self, params_line):
@@ -90,10 +93,11 @@ class Handler:
 
 # Identifies a group of related requests
 class RequestGroup:
-    def __init__(self, method, url, params):
+    def __init__(self, method, url, params, action):
         self.url = url
         self.method = method
         self.params = params
+        self.action = action
 
     def __str__(self):
         toRet = ""
@@ -108,9 +112,6 @@ class RequestGroup:
 
     def execute(self):
         print "Time to execute.."
-        print self
-        print "sources: ", self.extractSources()
-        print ""
 
         keys, sources = self.extractSources()
         if sources:
@@ -121,7 +122,11 @@ class RequestGroup:
 
                 print self
                 content = self.send()
-            # TODO: insert conditional actions
+
+                if self.action <> None:
+                    print self.getUrl()
+                    self.action.setUrl(self.getUrl())
+                    self.action.execute()
         else:
             content = self.send()
             print "\nLogged in: " + str(not "Log in" in content)
@@ -141,13 +146,18 @@ class RequestGroup:
 
     # Return either "URL[?params]" if it's a GET request or ["URL", params] if it's post
     def send(self):
-        url = self.url
+        url = self.getUrl()
+
         if self.method == "GET":
-            if len(self.params) <> 0:
-                url += "?" + urllib.urlencode(self.params)
             return urllib2.urlopen(url).read()
         elif self.method == "POST":
             return urllib2.urlopen(url, urllib.urlencode(self.params)).read()
+
+    def getUrl(self):
+        url = self.url
+        if self.method == "GET" and len(self.params) <> 0:
+            url += "?" + urllib.urlencode(self.params)
+        return url
 
 
 # ----------
@@ -246,6 +256,59 @@ class SourceHandler:
                 self.currValue[p] = self.sources[p].next()
                 p -= 1
         raise StopIteration()
+
+
+# ----------
+#  ACTIONS
+# ----------
+
+# Parent for all the sources
+class Action:
+    __metaclass__ = ABCMeta
+
+    def __init__(self, url, condition = ""):  # self or external url
+        self.url = url
+        self.condition = condition
+
+    @abstractmethod
+    def conditionAccomplished(self): pass
+
+    @abstractmethod
+    def execute(self): pass
+
+    def setUrl(self, url):
+        self.url = url
+
+
+class DownloadAction(Action):
+
+    def conditionAccomplished(self):
+        if self.condition == "":
+            return True
+        else:
+            return False # TODO
+
+    def execute(self):
+        if self.conditionAccomplished():
+            print "Downloading...", self.url
+            urllib.urlretrieve(self.url, self.getFileName())
+
+    def getFileName(self):
+        baseNameAndParams = self.url.split("/")[-1].split("?")
+        aux = baseNameAndParams[0].split(".")
+        fileName, fileExt = ".".join(aux[:-1]), aux[-1]
+
+        if len(baseNameAndParams) > 1:
+            pairs = baseNameAndParams[1][1:].split("&")
+
+            for p in pairs:
+                name, value = p.split("=")
+                fileName += "_" + value
+
+        if fileExt <> "":
+            fileName += "." + fileExt
+
+        return fileName
 
 
 # --------------------
