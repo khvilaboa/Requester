@@ -6,6 +6,7 @@ from abc import ABCMeta, abstractmethod
 # ---------
 
 class Handler:
+
     def __init__(self, fileName):
         self.fileName = fileName
         self.requests = []
@@ -16,6 +17,7 @@ class Handler:
                                            urllib2.HTTPHandler(debuglevel=1))
         urllib2.install_opener(self.opener)
 
+        self.inputs = {}
         self.parse()
 
     def parse(self):
@@ -32,28 +34,46 @@ class Handler:
 
     # Returns a Request obj. from the lines in which a expression is defined
     def parseRequest(self, req):
+
+        # Replace items related to the global inputs
+        for k, v in self.inputs.iteritems():
+            req = req.replace("[[" + k + "]]", v)
+
         lines = req.split("\n")
 
-        method = "GET"
-        url = ""
-        params = None
-        action = None
+        if lines and lines[0].replace(" ", "").upper() == "#INIT": # config
+            inputs = {}
 
-        for line in lines:
-            # Get and format name and value of the command (ex: "METHOD : GET")
-            name, value = self.getPair(line, ":")
-            name = name.upper()
+            for line in lines:
+                name, value = self.getPair(line, ":")
+                name = name.upper()
 
-            if name == "URL":
-                url = value
-            elif name == "METHOD":
-                method = value.upper()
-            elif name == "PARAMS":
-                params = self.parseParams(value)
-            elif name == "ACTION":
-                action = DownloadAction(url)
+                if name == "INPUT":
+                    for k in value.replace(" ", "").split(","):
+                        inputs[k] = raw_input(k + ": ")
 
-        return RequestGroup(method, url, params, action) if url <> "" else None
+            self.inputs = inputs
+        else:
+            method = "GET"
+            url = ""
+            params = None
+            action = None
+
+            for line in lines:
+                # Get and format name and value of the command (ex: "METHOD : GET")
+                name, value = self.getPair(line, ":")
+                name = name.upper()
+
+                if name == "URL":
+                    url = value
+                elif name == "METHOD":
+                    method = value.upper()
+                elif name == "PARAMS":
+                    params = self.parseParams(value)
+                elif name == "ACTION":
+                    action = DownloadAction(url)
+
+            return RequestGroup(method, url, params, action) if url <> "" else None
 
     # Returns the params (in dictionary form) from the line that specifies them
     def parseParams(self, params_line):
@@ -74,6 +94,9 @@ class Handler:
     def sendRequests(self):
         for req in self.requests:
             req.execute()
+
+    def getInputs(self):
+        return self.inputs
 
 
 # Identifies a group of related requests
