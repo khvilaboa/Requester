@@ -61,23 +61,8 @@ class Handler:
 
         for param in params_line.split("&"):
             name, value = self.getPair(param, "=")
+            params[name] = value
 
-            match = re.match(r"\[\[(.*)\]\]", value)
-            if match:  # Special commands
-                sc_spec = self.getPair(match.group(1), ":")
-                sc_name = sc_spec[0].upper()
-                sc_params = sc_spec[1:]
-
-                if sc_name == "FILE":  # TODO: Check if file exists
-                    fileName = sc_params[0]
-                    params[name] = FileSource(fileName)
-                elif sc_name == "SEQ":
-                    seq = sc_params[0]
-                    params[name] = SeqSource(seq)
-                else:
-                    pass  # TODO: raise Exception
-            else:
-                params[name] = value
         return params
 
     # Separate name and value in a expression of the form: "NAME SEP VALUE"
@@ -99,11 +84,15 @@ class RequestGroup:
         self.params = params
         self.action = action
 
+        # To store the url and params of the next request
+        self.parsedUrl = self.url
+        self.parsedParams = urllib.urlencode(self.params) if params <> None else None
+
     def __str__(self):
         toRet = ""
         toRet += "%s %s" % (self.method, self.url)
 
-        if self.method == "GET" and len(self.params) <> 0:
+        if self.method == "GET" and self.params:
             toRet += "?%s" % urllib.urlencode(self.params)
         elif self.method == "POST":
             toRet += "\nData: %s" % self.params
@@ -113,52 +102,96 @@ class RequestGroup:
     def execute(self):
         print "Time to execute.."
 
-        keys, sources = self.extractSources()
+        sources = self.extractSources()
+        print sources
+
         if sources:
-            print keys, sources
-            for comb in SourceHandler(sources):
-                for k, v in zip(keys, comb):
-                    self.params[k] = v
+            print sources
+            for comb in SourceHandler(sources.values()):
+                urlWithParams = self.url + ("?" + self.getParamsStr() if self.params else "")
+
+                # Replace the data given in the sources in the url and params
+                for k, v in zip(sources.keys(), comb):
+                    urlWithParams = urlWithParams.replace(k, v)
+
+                self.parsedUrl, self.parsedParams = self.getPair(urlWithParams, "?")
 
                 print self
-                content = self.send()
 
                 if self.action <> None:
-                    print self.getUrl()
-                    self.action.setUrl(self.getUrl())
+                    self.action.setUrl(urlWithParams)
                     self.action.execute()
+                else:
+                    content = self.send()
         else:
             content = self.send()
-            print "\nLogged in: " + str(not "Log in" in content)
-            toFile("content.html", content)
 
-        # content = urllib2.urlopen(*self.getData()).read()
-
-    def extractSources(self):
-        keys = []
-        sources = []
+    # Converts the param dictionry in a string (params form)
+    def getParamsStr(self):
+        res = ""
         for k, v in self.params.iteritems():
-            if not isinstance(v, str):
-                keys.append(k)
-                sources.append(v)
+            res += k + "=" + v + "&"
+        return res[:-1]
 
-        return keys, sources
+    # Identifies, instance and return the needed sources related to the request group
+    def extractSources(self):
+        sources = {}   # dictionary with the sources, in the form { key: src }
 
-    # Return either "URL[?params]" if it's a GET request or ["URL", params] if it's post
+        # Check if are special commands in the url
+        spec, src = self.getSourceFromCmd(self.url)
+        if src <> None: sources[spec] = src
+
+        if self.params <> None:
+            for k, v in self.params.iteritems():
+                # Check if are special commands in the key
+                spec, src = self.getSourceFromCmd(k)
+                if src <> None: sources[spec] = src
+
+                # Check if are special commands in the value
+                spec, src = self.getSourceFromCmd(v)
+                if src <> None: sources[spec] = src
+
+        print self.getSourceFromCmd(self.url)
+        return sources
+
+    # Instance a source from the command given, of the form [[id:params]]
+    def getSourceFromCmd(self, cmd):
+        src = None
+        spec = None
+        match = re.match(r".*\[\[(.*)\]\].*", cmd)  # Special commands
+        if match:
+            sc_spec = self.getPair(match.group(1), ":")
+            spec = "[[" + match.group(1) + "]]"
+
+            sc_name = sc_spec[0].upper()
+            sc_params = sc_spec[1:]
+
+            if sc_name == "FILE":  # TODO: Check if file exists
+                fileName = sc_params[0]
+                src = FileSource(fileName)
+            elif sc_name == "SEQ":
+                seq = sc_params[0]
+                src = SeqSource(seq)
+            else:
+                pass  # TODO: raise Exception
+        return spec, src
+
+    # Send the current request
     def send(self):
-        url = self.getUrl()
+        url = self.parsedUrl
 
         if self.method == "GET":
+            if self.parsedParams: url += "?" + self.parsedParams
             return urllib2.urlopen(url).read()
         elif self.method == "POST":
-            return urllib2.urlopen(url, urllib.urlencode(self.params)).read()
+            return urllib2.urlopen(url, urllib.urlencode(self.parsedParams)).read()
 
-    def getUrl(self):
-        url = self.url
-        if self.method == "GET" and len(self.params) <> 0:
-            url += "?" + urllib.urlencode(self.params)
-        return url
 
+    # Separate name and value in a expression of the form: "NAME SEP VALUE"
+    def getPair(self, pair, sep):
+        tmp = pair.split(sep)
+        name, value = tmp[0], sep.join(tmp[1:])
+        return name.strip(), value.strip()
 
 # ----------
 #  SOURCES
@@ -222,7 +255,7 @@ class SeqSource(Source):
     def next(self):
         if self.pointer < self.fin:
             self.pointer += self.step
-            return self.pointer
+            return str(self.pointer)
         else:
             raise StopIteration()
 
