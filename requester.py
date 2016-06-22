@@ -51,7 +51,7 @@ class Handler:
 
         # The data to parse corresponds with the initialization configuration
         if lines and lines[0].replace(" ", "").upper() == "#INIT": 
-            logging.debug('Initializing...')
+            logging.debug('INITIALIZING')
             self.inputs = {}
 
             for line in lines:
@@ -67,27 +67,55 @@ class Handler:
                     for k in value.replace(" ", "").split(","):
                         self.inputs[k] = raw_input(k + ": ")
         else:
+            logging.debug("PARSING NEW REQUEST")
             method = "GET"
             url = ""
             params = None
             action = None
+            preActions = ""
+            postActions = ""
+
+            level = "base"
 
             for line in lines:
                 # Get and format name and value of the command (ex: "METHOD : GET")
+                logging.debug("Reading line... (%s)" % line)
                 name, value = self.getPair(line, ":")
-                name = name.upper()
+                name = name.strip().upper()
+                value = value.strip()
 
-                if name == "URL":
-                    url = value
-                elif name == "METHOD":
-                    method = value.upper()
-                elif name == "PARAMS":
-                    params = self.parseParams(value)
-                elif name == "ACTION":
-                    action = DownloadAction(url)
+                if level == "pre":
+                    if line.startswith("\t"):
+                        logging.debug("Adding preaction... (%s -> %s)" % (name, value))
+                        preActions += line[1:] + "\n"
+                    else:
+                        level = "base"
+                if level == "post":
+                    if line.startswith("\t"):
+                        logging.debug("Adding postaction... (%s -> %s)" % (name, value))
+                        postActions += line[1:] + "\n"
+                    else:
+                        level = "base"        
+
+                if level == "base":
+                    if name == "URL":
+                        url = value
+                    elif name == "METHOD":
+                        method = value.upper()
+                    elif name == "PARAMS":
+                        params = self.parseParams(value)
+                    elif name == "ACTION":
+                        action = DownloadAction(url)
+                    elif name == "PRE":
+                        level = "pre"
+                    elif name == "POST":
+                        level = "post"
 
             if url != "":
-                return RequestGroup(method, url, params, action)
+                logging.debug("Preactions... (%s)" % preActions)
+                logging.debug("Postactions... (%s)" % postActions)
+
+                return RequestGroup(method, url, params, action, preActions, postActions)
 
         return None
 
@@ -117,11 +145,13 @@ class Handler:
 
 # Identifies a group of related requests
 class RequestGroup:
-    def __init__(self, method, url, params, action):
+    def __init__(self, method, url, params, action, preActions, postActions):
         self.url = url
         self.method = method
         self.params = params
         self.action = action
+        self.preActions = preActions
+        self.postActions = postActions
 
         # To store the url and params of the next request
         self.parsedUrl = self.url
@@ -138,7 +168,8 @@ class RequestGroup:
         return toRet
 
     def execute(self):
-        logging.debug("Executing request...")
+        print
+        logging.debug("EXECUTING REQUEST")
 
         sources = self.extractSources()
         logging.debug("Sources: %s" % sources)
@@ -156,11 +187,21 @@ class RequestGroup:
                 logging.debug("Request details:")
                 logging.debug(self)
 
+                logging.debug("Executing preActions...")
+                if self.preActions:
+                    self.executeEventActions(self.preActions, "pre")
+
                 if self.action != None:
+                    logging.debug("Executing main action (download)...")
                     self.action.setUrl(urlWithParams)
                     self.action.execute()
                 else:
+                    logging.debug("Executing main action (request)...")
                     content = self.send()
+
+                logging.debug("Executing postActions...")
+                if self.postActions:
+                    self.executeEventActions(self.postActions, "post")
         else:
             content = self.send()
 
@@ -230,6 +271,16 @@ class RequestGroup:
         tmp = pair.split(sep)
         name, value = tmp[0], sep.join(tmp[1:])
         return name.strip(), value.strip()
+
+    def executeEventActions(self, actions, event):
+
+        for action in actions.split("\n"):
+            name, value = self.getPair(action, ":")
+            name = name.strip().upper()
+            value = value.strip()
+
+            if name == "OUTPUT":
+                print value
 
 # ----------
 #  SOURCES
@@ -363,6 +414,8 @@ class DownloadAction(Action):
         if self.conditionAccomplished():
             logging.debug("Downloading... (%s)" % self.url)
             urllib.urlretrieve(self.url, self.getFileName())
+        else:
+            logging.debug(">>> Condition not accomplished <<<")
 
     def getFileName(self):
         baseNameAndParams = self.url.split("/")[-1].split("?")
@@ -397,5 +450,5 @@ def toFile(name, content):
 # ------
 
 if __name__ == "__main__":
-    h = Handler(sys.argv[1])
+    h = Handler("req\\test.req") #sys.argv[1]
     h.sendRequests()
