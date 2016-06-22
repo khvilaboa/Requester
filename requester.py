@@ -1,5 +1,9 @@
-import cookielib, urllib, urllib2, re, sys
+import cookielib, urllib, urllib2, re, sys, logging
 from abc import ABCMeta, abstractmethod
+
+# filename='programLog.txt', 
+logging.basicConfig(level=logging.DEBUG, format=' %(asctime)s - %(levelname)s - %(message)s')
+#logging.disable(logging.CRITICAL)
 
 # ---------
 #  CLASSES
@@ -12,6 +16,7 @@ class Handler:
         self.requests = []
 
         # Create opener with cookie support
+        logging.debug('Configuring opener...')
         self.cookiejar = cookielib.CookieJar()
         self.opener = urllib2.build_opener(urllib2.HTTPCookieProcessor(self.cookiejar),
                                            urllib2.HTTPHandler(debuglevel=1))
@@ -20,7 +25,9 @@ class Handler:
         self.inputs = {}
         self.parse()
 
+    # Load the data of the file specified
     def parse(self):
+        logging.debug('Loading input file data...')
         f = open(self.fileName, "r")
         content = f.read()
         f.close()
@@ -30,7 +37,8 @@ class Handler:
         # For each requests in the requests file (separated by a blank line)
         for reqLines in content.split("\n\n"):
             req = self.parseRequest(reqLines)
-            if req: self.requests.append(req)
+            if req: 
+                self.requests.append(req)
 
     # Returns a Request obj. from the lines in which a expression is defined
     def parseRequest(self, req):
@@ -41,18 +49,23 @@ class Handler:
 
         lines = req.split("\n")
 
-        if lines and lines[0].replace(" ", "").upper() == "#INIT": # config
-            inputs = {}
+        # The data to parse corresponds with the initialization configuration
+        if lines and lines[0].replace(" ", "").upper() == "#INIT": 
+            logging.debug('Initializing...')
+            self.inputs = {}
 
             for line in lines:
+
+                if re.match("^\s*#", line): # comment
+                    logging.debug('Comment detected...%s' % line)
+                    continue
+
                 name, value = self.getPair(line, ":")
-                name = name.upper()
+                name = name.strip().upper()
 
                 if name == "INPUT":
                     for k in value.replace(" ", "").split(","):
-                        inputs[k] = raw_input(k + ": ")
-
-            self.inputs = inputs
+                        self.inputs[k] = raw_input(k + ": ")
         else:
             method = "GET"
             url = ""
@@ -73,7 +86,10 @@ class Handler:
                 elif name == "ACTION":
                     action = DownloadAction(url)
 
-            return RequestGroup(method, url, params, action) if url <> "" else None
+            if url != "":
+                return RequestGroup(method, url, params, action)
+
+        return None
 
     # Returns the params (in dictionary form) from the line that specifies them
     def parseParams(self, params_line):
@@ -109,27 +125,25 @@ class RequestGroup:
 
         # To store the url and params of the next request
         self.parsedUrl = self.url
-        self.parsedParams = urllib.urlencode(self.params) if params <> None else None
+        self.parsedParams = urllib.urlencode(self.params) if params != None else None
 
     def __str__(self):
-        toRet = ""
-        toRet += "%s %s" % (self.method, self.url)
+        toRet = "%s %s" % (self.method, self.parsedUrl)
 
-        if self.method == "GET" and self.params:
-            toRet += "?%s" % urllib.urlencode(self.params)
+        if self.method == "GET" and self.parsedParams:
+            toRet += "?%s" % self.parsedParams
         elif self.method == "POST":
-            toRet += "\nData: %s" % self.params
+            toRet += "\nData: %s" % self.parsedParams
 
         return toRet
 
     def execute(self):
-        print "Time to execute.."
+        logging.debug("Executing request...")
 
         sources = self.extractSources()
-        print sources
+        logging.debug("Sources: %s" % sources)
 
         if sources:
-            print sources
             for comb in SourceHandler(sources.values()):
                 urlWithParams = self.url + ("?" + self.getParamsStr() if self.params else "")
 
@@ -139,9 +153,10 @@ class RequestGroup:
 
                 self.parsedUrl, self.parsedParams = self.getPair(urlWithParams, "?")
 
-                print self
+                logging.debug("Request details:")
+                logging.debug(self)
 
-                if self.action <> None:
+                if self.action != None:
                     self.action.setUrl(urlWithParams)
                     self.action.execute()
                 else:
@@ -162,19 +177,19 @@ class RequestGroup:
 
         # Check if are special commands in the url
         spec, src = self.getSourceFromCmd(self.url)
-        if src <> None: sources[spec] = src
+        if src != None: 
+            sources[spec] = src
 
-        if self.params <> None:
+        if self.params != None:
             for k, v in self.params.iteritems():
                 # Check if are special commands in the key
                 spec, src = self.getSourceFromCmd(k)
-                if src <> None: sources[spec] = src
+                if src != None: sources[spec] = src
 
                 # Check if are special commands in the value
                 spec, src = self.getSourceFromCmd(v)
-                if src <> None: sources[spec] = src
+                if src != None: sources[spec] = src
 
-        print self.getSourceFromCmd(self.url)
         return sources
 
     # Instance a source from the command given, of the form [[id:params]]
@@ -268,7 +283,7 @@ class SeqSource(Source):
     def __init__(self, strDef):
         try:
             params = map(lambda x: int(x), strDef.split(","))
-            if len(params) <> 3: raise SyntaxError
+            if len(params) != 3: raise SyntaxError
 
             self.ini, self.fin, self.step = params
             self.pointer = self.ini - self.step
@@ -322,7 +337,7 @@ class SourceHandler:
 class Action:
     __metaclass__ = ABCMeta
 
-    def __init__(self, url, condition = ""):  # self or external url
+    def __init__(self, url, condition = None):  # self or external url
         self.url = url
         self.condition = condition
 
@@ -339,14 +354,14 @@ class Action:
 class DownloadAction(Action):
 
     def conditionAccomplished(self):
-        if self.condition == "":
+        if self.condition:
             return True
         else:
             return False # TODO
 
     def execute(self):
         if self.conditionAccomplished():
-            print "Downloading...", self.url
+            logging.debug("Downloading... (%s)" % self.url)
             urllib.urlretrieve(self.url, self.getFileName())
 
     def getFileName(self):
@@ -361,7 +376,7 @@ class DownloadAction(Action):
                 name, value = p.split("=")
                 fileName += "_" + value
 
-        if fileExt <> "":
+        if fileExt != "":
             fileName += "." + fileExt
 
         return fileName
