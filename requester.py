@@ -19,10 +19,10 @@ class Handler:
         logging.debug('Configuring opener...')
         self.cookiejar = cookielib.CookieJar()
         self.opener = urllib2.build_opener(urllib2.HTTPCookieProcessor(self.cookiejar),
-                                           urllib2.HTTPHandler(debuglevel=1))
+                                           urllib2.HTTPHandler(debuglevel=0))
         urllib2.install_opener(self.opener)
 
-        self.inputs = {}
+        self.inputs = {}  # Global inputs
         self.parse()
 
     # Load the data of the file specified
@@ -40,13 +40,20 @@ class Handler:
             if req: 
                 self.requests.append(req)
 
+    def translateGlobals(self, line):
+        logging.debug('Globals: %s', str(self.inputs))
+        for k, v in self.inputs.iteritems():
+            line = line.replace("[[" + k + "]]", v)
+        logging.debug('Translated: %s', line)
+        return line
+
+    def isComment(self, line):
+        return bool(re.match("^\s*#", line))
+
     # Returns a Request obj. from the lines in which a expression is defined
     def parseRequest(self, req):
 
         # Replace items related to the global inputs
-        for k, v in self.inputs.iteritems():
-            req = req.replace("[[" + k + "]]", v)
-
         lines = req.split("\n")
 
         # The data to parse corresponds with the initialization configuration
@@ -56,7 +63,7 @@ class Handler:
 
             for line in lines:
 
-                if re.match("^\s*#", line): # comment
+                if self.isComment(line): # comment
                     logging.debug('Comment detected...%s' % line)
                     continue
 
@@ -76,13 +83,16 @@ class Handler:
             postActions = ""
 
             level = "base"
+            touched = False  # to know if there is some valid cmd in this request
 
             for line in lines:
+
+                if self.isComment(line): # comment
+                    logging.debug('Comment detected...%s' % line)
+                    continue
+
                 # Get and format name and value of the command (ex: "METHOD : GET")
                 logging.debug("Reading line... (%s)" % line)
-                name, value = self.getPair(line, ":")
-                name = name.strip().upper()
-                value = value.strip()
 
                 if level == "pre":
                     if line.startswith("\t"):
@@ -98,6 +108,13 @@ class Handler:
                         level = "base"        
 
                 if level == "base":
+
+                    line = self.translateGlobals(line)
+
+                    name, value = self.getPair(line, ":")
+                    name = name.strip().upper()
+                    value = value.strip()
+
                     if name == "URL":
                         url = value
                     elif name == "METHOD":
@@ -110,12 +127,15 @@ class Handler:
                         level = "pre"
                     elif name == "POST":
                         level = "post"
+                    else:
+                        pass # TODO: raise exception + modify touched
 
-            if url != "":
-                logging.debug("Preactions... (%s)" % preActions)
-                logging.debug("Postactions... (%s)" % postActions)
+            if url == "":
+                return # TODO: raise exception
+            logging.debug("Preactions... (%s)" % preActions)
+            logging.debug("Postactions... (%s)" % postActions)
 
-                return RequestGroup(method, url, params, action, preActions, postActions)
+            return RequestGroup(self, method, url, params, action, preActions, postActions)
 
         return None
 
@@ -145,7 +165,8 @@ class Handler:
 
 # Identifies a group of related requests
 class RequestGroup:
-    def __init__(self, method, url, params, action, preActions, postActions):
+    def __init__(self, parent, method, url, params, action, preActions, postActions):
+        self.parent = parent
         self.url = url
         self.method = method
         self.params = params
@@ -156,6 +177,8 @@ class RequestGroup:
         # To store the url and params of the next request
         self.parsedUrl = self.url
         self.parsedParams = urllib.urlencode(self.params) if params != None else None
+
+        self.locals = {}
 
     def __str__(self):
         toRet = "%s %s" % (self.method, self.parsedUrl)
@@ -174,6 +197,11 @@ class RequestGroup:
         sources = self.extractSources()
         logging.debug("Sources: %s" % sources)
 
+        logging.debug("Executing preActions...")
+        if self.preActions:
+            #self.preActions = self.parent.translateGlobals(self.preActions)
+            self.executeEventActions(self.preActions, "pre")
+
         if sources:
             for comb in SourceHandler(sources.values()):
                 urlWithParams = self.url + ("?" + self.getParamsStr() if self.params else "")
@@ -187,23 +215,29 @@ class RequestGroup:
                 logging.debug("Request details:")
                 logging.debug(self)
 
-                logging.debug("Executing preActions...")
-                if self.preActions:
-                    self.executeEventActions(self.preActions, "pre")
-
                 if self.action != None:
                     logging.debug("Executing main action (download)...")
                     self.action.setUrl(urlWithParams)
                     self.action.execute()
                 else:
                     logging.debug("Executing main action (request)...")
-                    content = self.send()
-
-                logging.debug("Executing postActions...")
-                if self.postActions:
-                    self.executeEventActions(self.postActions, "post")
+                    self.send()
         else:
-            content = self.send()
+            logging.debug("Executing main action (request)...")
+            self.send()
+
+        logging.debug("Executing postActions...")
+        if self.postActions:
+            #self.postActions = self.parent.translateGlobals(self.postActions)
+            #self.postActions = self.translateLocals(self.postActions)
+            self.executeEventActions(self.postActions, "post")
+
+    def translateLocals(self, s):
+        #logging.debug('Locals: %s', str(self.locals))
+        for k, v in self.locals.iteritems():
+            s = s.replace("[[" + k + "]]", v)
+        logging.debug('Translated (locals): %s', s)
+        return s
 
     # Converts the param dictionry in a string (params form)
     def getParamsStr(self):
@@ -259,11 +293,13 @@ class RequestGroup:
     def send(self):
         url = self.parsedUrl
 
+        logging.debug("Requested url: %s", url)
+
         if self.method == "GET":
             if self.parsedParams: url += "?" + self.parsedParams
-            return urllib2.urlopen(url).read()
+            self.locals["code"] = urllib2.urlopen(url).read()
         elif self.method == "POST":
-            return urllib2.urlopen(url, urllib.urlencode(self.parsedParams)).read()
+            self.locals["code"] = urllib2.urlopen(url, urllib.urlencode(self.parsedParams)).read()
 
 
     # Separate name and value in a expression of the form: "NAME SEP VALUE"
@@ -275,12 +311,34 @@ class RequestGroup:
     def executeEventActions(self, actions, event):
 
         for action in actions.split("\n"):
+
+            # Translate vars
+            action = self.parent.translateGlobals(action)
+            if event == "post":
+                action = self.translateLocals(action)
+
+            # Get command and its info
             name, value = self.getPair(action, ":")
             name = name.strip().upper()
             value = value.strip()
 
+            # Execute the command
             if name == "OUTPUT":
                 print value
+
+            if event == "post":  # Only post-actions
+                if name == "GETVAR":
+                    logging.debug("Now it's time to get the var (%s)", value)
+                    if "code" in self.locals:
+                        varName, expr = self.getPair(value, ",")
+                        logging.debug("Var: %s, expr: >%s<", varName, expr)
+                        logging.debug("Code: %s", self.locals["code"])
+                        reRes = re.search(expr, self.locals["code"])
+
+                        if reRes:
+                            self.parent.inputs[varName] = reRes.group(0) if len(reRes.groups()) == 0 else reRes.group(1) 
+                            logging.debug("Result: %s", self.parent.inputs[varName])
+
 
 # ----------
 #  SOURCES
@@ -388,7 +446,7 @@ class SourceHandler:
 class Action:
     __metaclass__ = ABCMeta
 
-    def __init__(self, url, condition = None):  # self or external url
+    def __init__(self, url, condition = True):  # self or external url
         self.url = url
         self.condition = condition
 
