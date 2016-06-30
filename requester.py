@@ -75,15 +75,16 @@ class Handler:
                         self.inputs[k] = raw_input(k + ": ")
         else:
             logging.debug("PARSING NEW REQUEST")
+            reqId = None
             method = "GET"
             url = ""
             params = None
             action = None
             preActions = ""
             postActions = ""
+            reqType = "AUTO"
 
             level = "base"
-            touched = False  # to know if there is some valid cmd in this request
 
             for line in lines:
 
@@ -115,27 +116,32 @@ class Handler:
                     name = name.strip().upper()
                     value = value.strip()
 
-                    if name == "URL":
+                    if name == "ID":
+                        reqId = value.upper()
+                    elif name == "URL":
                         url = value
                     elif name == "METHOD":
                         method = value.upper()
                     elif name == "PARAMS":
                         params = self.parseParams(value)
                     elif name == "ACTION":
+                        logging.debug("Establishing download action...")
                         action = DownloadAction(url)
+                    elif name == "TYPE":
+                        reqType = value.upper()
                     elif name == "PRE":
                         level = "pre"
                     elif name == "POST":
                         level = "post"
                     else:
-                        pass # TODO: raise exception + modify touched
+                        pass # TODO: raise exception 
 
             if url == "":
                 return # TODO: raise exception
             logging.debug("Preactions... (%s)" % preActions)
             logging.debug("Postactions... (%s)" % postActions)
 
-            return RequestGroup(self, method, url, params, action, preActions, postActions)
+            return RequestGroup(self, reqId, method, url, params, action, reqType, preActions, postActions)
 
         return None
 
@@ -157,20 +163,32 @@ class Handler:
 
     def sendRequests(self):
         for req in self.requests:
-            req.execute()
+            if req.type == "AUTO":
+                req.execute()
+            else:
+                logging.debug("Skipping request... (%s)" % req.type)
 
     def getInputs(self):
         return self.inputs
 
+    def executeById(self, reqId):
+        for req in self.requests:
+            if req.id is not None and req.id.upper() == reqId.upper():
+                req.execute()
+                return True
+        return False
+
 
 # Identifies a group of related requests
 class RequestGroup:
-    def __init__(self, parent, method, url, params, action, preActions, postActions):
+    def __init__(self, parent, reqId, method, url, params, action, reqType, preActions, postActions):
         self.parent = parent
+        self.id = reqId
         self.url = url
         self.method = method
         self.params = params
         self.action = action
+        self.type = reqType
         self.preActions = preActions
         self.postActions = postActions
 
@@ -190,6 +208,17 @@ class RequestGroup:
 
         return toRet
 
+    def getUrlWithParams(self):
+        urlWithParams = self.url + ("?" + self.getParamsStr() if self.params else "")
+        urlWithParams = self.parent.translateGlobals(urlWithParams)
+
+        if urlWithParams.startswith("//"):
+            urlWithParams = "http://" + urlWithParams[2:]
+        return urlWithParams
+
+    def getUrlAndParams(self):
+        return
+
     def execute(self):
         print
         logging.debug("EXECUTING REQUEST")
@@ -204,7 +233,7 @@ class RequestGroup:
 
         if sources:
             for comb in SourceHandler(sources.values()):
-                urlWithParams = self.url + ("?" + self.getParamsStr() if self.params else "")
+                urlWithParams = self.getUrlWithParams()
 
                 # Replace the data given in the sources in the url and params
                 for k, v in zip(sources.keys(), comb):
@@ -221,10 +250,17 @@ class RequestGroup:
                     self.action.execute()
                 else:
                     logging.debug("Executing main action (request)...")
+                    self.parsedUrl = self.parent.translateGlobals(self.parsedUrl)
                     self.send()
         else:
-            logging.debug("Executing main action (request)...")
-            self.send()
+            if self.action != None:
+                urlWithParams = self.getUrlWithParams()
+                self.action.setUrl(urlWithParams)
+                self.action.execute()
+            else:
+                logging.debug("Executing main action (request)...")
+                self.parsedUrl = self.parent.translateGlobals(self.parsedUrl)
+                self.send()
 
         logging.debug("Executing postActions...")
         if self.postActions:
@@ -308,6 +344,8 @@ class RequestGroup:
         name, value = tmp[0], sep.join(tmp[1:])
         return name.strip(), value.strip()
 
+
+    # Parse and execute the actions related with events ('pre', 'post')
     def executeEventActions(self, actions, event):
 
         for action in actions.split("\n"):
@@ -328,16 +366,25 @@ class RequestGroup:
 
             if event == "post":  # Only post-actions
                 if name == "GETVAR":
-                    logging.debug("Now it's time to get the var (%s)", value)
+                    logging.debug("Getting the var (%s)", value)
                     if "code" in self.locals:
                         varName, expr = self.getPair(value, ",")
                         logging.debug("Var: %s, expr: >%s<", varName, expr)
-                        logging.debug("Code: %s", self.locals["code"])
+                        #logging.debug("Code: %s", self.locals["code"])
                         reRes = re.search(expr, self.locals["code"])
 
                         if reRes:
                             self.parent.inputs[varName] = reRes.group(0) if len(reRes.groups()) == 0 else reRes.group(1) 
                             logging.debug("Result: %s", self.parent.inputs[varName])
+                elif name == "INVOKE":
+                    # Invoke a callable requesT by ID
+                    logging.debug("INVOKE: Trying to execute the request with ID '%s'..." % value)
+                    executed = self.parent.executeById(value)
+
+                    if executed:
+                        logging.debug("INVOKE: Executed correctly")
+                    else:
+                        logging.debug("INVOKE: ID not found")
 
 
 # ----------
@@ -470,7 +517,7 @@ class DownloadAction(Action):
 
     def execute(self):
         if self.conditionAccomplished():
-            logging.debug("Downloading... (%s)" % self.url)
+            logging.debug("Downloading... (%s). Filename: %s" % (self.url, self.getFileName()))
             urllib.urlretrieve(self.url, self.getFileName())
         else:
             logging.debug(">>> Condition not accomplished <<<")
