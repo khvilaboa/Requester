@@ -3,7 +3,7 @@ from abc import ABCMeta, abstractmethod
 
 # filename='programLog.txt', 
 logging.basicConfig(level=logging.DEBUG, format=' %(asctime)s - %(levelname)s - %(message)s')
-#logging.disable(logging.CRITICAL)
+logging.disable(logging.CRITICAL)
 
 # ---------
 #  CLASSES
@@ -41,10 +41,10 @@ class Handler:
                 self.requests.append(req)
 
     def translateGlobals(self, line):
-        logging.debug('Globals: %s', str(self.inputs))
+        #bug('Globals: %s', str(self.inputs))
         for k, v in self.inputs.iteritems():
             line = line.replace("[[" + k + "]]", v)
-        logging.debug('Translated: %s', line)
+        #logging.debug('Translated: %s', line)
         return line
 
     def isComment(self, line):
@@ -64,7 +64,7 @@ class Handler:
             for line in lines:
 
                 if self.isComment(line): # comment
-                    logging.debug('Comment detected...%s' % line)
+                    #logging.debug('Comment detected...%s' % line)
                     continue
 
                 name, value = self.getPair(line, ":")
@@ -80,8 +80,7 @@ class Handler:
             url = ""
             params = None
             action = None
-            preActions = ""
-            postActions = ""
+            eventActions = {}
             reqType = "AUTO"
 
             level = "base"
@@ -89,24 +88,22 @@ class Handler:
             for line in lines:
 
                 if self.isComment(line): # comment
-                    logging.debug('Comment detected...%s' % line)
+                    #logging.debug('Comment detected...%s' % line)
                     continue
 
                 # Get and format name and value of the command (ex: "METHOD : GET")
-                logging.debug("Reading line... (%s)" % line)
-
-                if level == "pre":
+                logging.debug("Reading line... (%s). Level: %s" % (line, level))
+                events = ("pre", "post", "pre-each", "post-each")
+                if level in events:
                     if line.startswith("\t"):
-                        logging.debug("Adding preaction... (%s -> %s)" % (name, value))
-                        preActions += line[1:] + "\n"
+                        logging.debug("Adding %s action... (%s -> %s)" % (level, name, value))
+                        if level in eventActions:
+                            eventActions[level] += line[1:] + "\n"
+                        else:
+                            eventActions[level] = line[1:] + "\n"
+                        continue
                     else:
                         level = "base"
-                if level == "post":
-                    if line.startswith("\t"):
-                        logging.debug("Adding postaction... (%s -> %s)" % (name, value))
-                        postActions += line[1:] + "\n"
-                    else:
-                        level = "base"        
 
                 if level == "base":
 
@@ -133,15 +130,19 @@ class Handler:
                         level = "pre"
                     elif name == "POST":
                         level = "post"
+                    elif name == "PRE-EACH":
+                        level = "pre-each"
+                    elif name == "POST-EACH":
+                        level = "post-each"
                     else:
                         pass # TODO: raise exception 
 
             if url == "":
                 return # TODO: raise exception
-            logging.debug("Preactions... (%s)" % preActions)
-            logging.debug("Postactions... (%s)" % postActions)
 
-            return RequestGroup(self, reqId, method, url, params, action, reqType, preActions, postActions)
+            logging.debug("Event actions... (%s)" % eventActions)
+
+            return RequestGroup(self, reqId, method, url, params, action, reqType, eventActions)
 
         return None
 
@@ -181,7 +182,7 @@ class Handler:
 
 # Identifies a group of related requests
 class RequestGroup:
-    def __init__(self, parent, reqId, method, url, params, action, reqType, preActions, postActions):
+    def __init__(self, parent, reqId, method, url, params, action, reqType, eventActions):
         self.parent = parent
         self.id = reqId
         self.url = url
@@ -189,8 +190,7 @@ class RequestGroup:
         self.params = params
         self.action = action
         self.type = reqType
-        self.preActions = preActions
-        self.postActions = postActions
+        self.eventActions = eventActions
 
         # To store the url and params of the next request
         self.parsedUrl = self.url
@@ -220,19 +220,22 @@ class RequestGroup:
         return
 
     def execute(self):
-        print
         logging.debug("EXECUTING REQUEST")
 
         sources = self.extractSources()
         logging.debug("Sources: %s" % sources)
-
-        logging.debug("Executing preActions...")
-        if self.preActions:
-            #self.preActions = self.parent.translateGlobals(self.preActions)
-            self.executeEventActions(self.preActions, "pre")
+        
+        if "pre" in self.eventActions:
+            logging.debug("Executing preActions...")
+            self.executeEventActions("pre")
 
         if sources:
             for comb in SourceHandler(sources.values()):
+
+                if "pre-each" in self.eventActions:
+                    logging.debug("Executing preEachActions...")
+                    self.executeEventActions("pre-each")
+
                 urlWithParams = self.getUrlWithParams()
 
                 # Replace the data given in the sources in the url and params
@@ -252,8 +255,13 @@ class RequestGroup:
                     logging.debug("Executing main action (request)...")
                     self.parsedUrl = self.parent.translateGlobals(self.parsedUrl)
                     self.send()
+
+                if "post-each" in self.eventActions:
+                    logging.debug("Executing postEachActions...")
+                    self.executeEventActions("post-each")
         else:
             if self.action != None:
+                logging.debug("Executing main action (download)...")
                 urlWithParams = self.getUrlWithParams()
                 self.action.setUrl(urlWithParams)
                 self.action.execute()
@@ -262,17 +270,15 @@ class RequestGroup:
                 self.parsedUrl = self.parent.translateGlobals(self.parsedUrl)
                 self.send()
 
-        logging.debug("Executing postActions...")
-        if self.postActions:
-            #self.postActions = self.parent.translateGlobals(self.postActions)
-            #self.postActions = self.translateLocals(self.postActions)
-            self.executeEventActions(self.postActions, "post")
+        if "post" in self.eventActions:
+            logging.debug("Executing postActions...")
+            self.executeEventActions("post")
 
     def translateLocals(self, s):
         #logging.debug('Locals: %s', str(self.locals))
         for k, v in self.locals.iteritems():
             s = s.replace("[[" + k + "]]", v)
-        logging.debug('Translated (locals): %s', s)
+        #logging.debug('Translated (locals): %s', s)
         return s
 
     # Converts the param dictionry in a string (params form)
@@ -346,9 +352,9 @@ class RequestGroup:
 
 
     # Parse and execute the actions related with events ('pre', 'post')
-    def executeEventActions(self, actions, event):
+    def executeEventActions(self, event):
 
-        for action in actions.split("\n"):
+        for action in self.eventActions[event].split("\n"):
 
             # Translate vars
             action = self.parent.translateGlobals(action)
@@ -364,7 +370,7 @@ class RequestGroup:
             if name == "OUTPUT":
                 print value
 
-            if event == "post":  # Only post-actions
+            if event.startswith("post"):  # Only post-actions
                 if name == "GETVAR":
                     logging.debug("Getting the var (%s)", value)
                     if "code" in self.locals:
