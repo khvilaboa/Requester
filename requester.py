@@ -1,4 +1,4 @@
-import cookielib, urllib, urllib2, re, sys, logging
+import cookielib, urllib, urllib2, re, sys, logging, time
 from abc import ABCMeta, abstractmethod
 
 # filename='programLog.txt', 
@@ -15,7 +15,7 @@ class Handler:
     initTokens = ['INPUT']
     baseTokens = ['ID', 'URL', 'PARAMS', 'ACTION', 'TYPE']
     levelTokens = ['PRE', 'POST', 'PRE-EACH', 'POST-EACH']
-    inLevelTokens = {'ALL': ['OUTPUT'], 'PRE': [], 'POST': ['GETVAR', 'INVOKE']}
+    inLevelTokens = {'ALL': ['OUTPUT', 'DELAY'], 'PRE': [], 'POST': ['GETVAR', 'INVOKE']}
 
     # Request types
     reqTypes = ['AUTO', 'CALLABLE']
@@ -47,6 +47,7 @@ class Handler:
         nLine = 1
         nRequest = 0
         level = "BASE"
+        expectingRequest = True
         hasUrl = False
         hasCommands = False
         startingAt = 1
@@ -70,6 +71,7 @@ class Handler:
 
             # Blank lines means the start of a new request
             if re.match("^\s*$", line):
+                if expectingRequest == False:
                     logging.debug("%d: End of request" % nLine)
                     
                     # Check semantic aspects of the last request
@@ -84,10 +86,12 @@ class Handler:
                         #print ">%s<" % currBuff
                         outBuff += currBuff + "\n"
                 currBuff = ""
+                expectingRequest = True
                 nLine += 1
                 continue
 
             # Check correct syntax ('TOKEN: VALUE')
+            expr = "\t?([\w-]*)\s*:\s*([^\s]*)\s*"
             correctLine = re.match(expr, line, re.I)
 
             if not correctLine:
@@ -100,9 +104,11 @@ class Handler:
                 level = "BASE"
 
             # Inits a new request after a new line (or several)
+            if expectingRequest:
                 logging.debug("%d: New request" % nLine)
 
                 # Reset control variables
+                expectingRequest = False
                 level = "BASE"
                 hasUrl = False
                 hasCommands = False
@@ -138,15 +144,17 @@ class Handler:
                 if token not in self.inLevelTokens[key] and token not in self.inLevelTokens['ALL']:
                     raise SyntaxError("Token %s not recognized in %s level (line %d)" % (token, level, nLine))
 
-
                 if token == "INVOKE" and not re.search("ID\s*:\s*%s\s*$" % value, content, re.M):
                     logging.debug("ExprInvoke: %s" % ("ID\s*:\s*%s\s*$" % value))
                     raise SyntaxError("There isn't a request with ID '%s' (line %d)" % (value, nLine))
-            
+                elif token == "DELAY":
+                    if not re.match("^[\d]*(.[\d]+)?( ?(ms|s))?$", value):
+                        raise SyntaxError("Incorrect parameters in the DELAY command (line %d)" % nLine)
             currBuff += line + "\n"
             nLine += 1
 
-        print ">>>%s<<<" % outBuff.strip()
+        #print ">>>%s<<<" % outBuff.strip()
+
         return outBuff.strip()
 
     # Load the data of the file specified
@@ -496,6 +504,10 @@ class RequestGroup:
             # Execute the command
             if name == "OUTPUT":
                 print value
+            elif name == "DELAY":
+                num, _, unit = re.search("([\d.]*)( ?(ms|s))?", "2000 ms").groups()
+                numSec = float(num) / (1 if unit == "s" else 1000)
+                time.sleep(numSec)
 
             if event.startswith("post"):  # Only post-actions
                 if name == "GETVAR":
@@ -688,5 +700,5 @@ def toFile(name, content):
 # ------
 
 if __name__ == "__main__":
-    h = Handler("req\\test.req") #sys.argv[1]
+    h = Handler("req\\local.req") #sys.argv[1]
     h.sendRequests()
