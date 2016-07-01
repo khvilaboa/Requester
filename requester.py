@@ -11,6 +11,15 @@ logging.disable(logging.CRITICAL)
 
 class Handler:
 
+    # Commands
+    initTokens = ['INPUT']
+    baseTokens = ['ID', 'URL', 'PARAMS', 'ACTION', 'TYPE']
+    levelTokens = ['PRE', 'POST', 'PRE-EACH', 'POST-EACH']
+    inLevelTokens = {'ALL': ['OUTPUT'], 'PRE': [], 'POST': ['GETVAR', 'INVOKE']}
+
+    # Request types
+    reqTypes = ['AUTO', 'CALLABLE']
+
     def __init__(self, fileName):
         self.fileName = fileName
         self.requests = []
@@ -23,7 +32,122 @@ class Handler:
         urllib2.install_opener(self.opener)
 
         self.inputs = {}  # Global inputs
-        self.parse()
+
+        try:
+            self.parse()
+        except SyntaxError as e:
+            print "Syntax error: %s" % e
+
+    # Check syntax and raise exceptions if needed (bad input file syntax)
+    def preParse(self, content):
+        #content = re.sub("\n\n+", "\n\n", content.strip())
+        #requests = content.split("\n\n")
+        content = content + "\n"  # Assures the last newline
+
+        nLine = 1
+        nRequest = 0
+        level = "BASE"
+        hasUrl = False
+        hasCommands = False
+        startingAt = 1
+        reqId = None
+
+        currBuff = ""
+        outBuff = ""
+
+        for line in content.split("\n"):
+            logging.debug("%d: %s" % (nLine, line))
+
+            # Check if the current line it's a comment
+            if re.match("\s*#.*", line):
+                if re.match("#\s*INIT\s*$", line):  # Initialization mark
+                    if currBuff == "":
+                        currBuff += "#INIT" + "\n"
+                    else:
+                        print "Warning: The INIT comment has to be at the beginning of the request to take effect (line %d)" % nLine
+                nLine += 1
+                continue
+
+            # Blank lines means the start of a new request
+            if re.match("^\s*$", line):
+                    logging.debug("%d: End of request" % nLine)
+                    
+                    # Check semantic aspects of the last request
+                    logging.debug("Has URL: %s" % hasUrl)
+                    logging.debug("Has cmds: %s" % hasCommands)
+                    if hasCommands and not hasUrl:
+                        reqInfo = reqId if reqId is not None else "starting at %d" % startingAt
+                        raise SyntaxError("Detected request without URL specified (%s)" % reqInfo)
+
+                    # Dumps the current buffer into de output one if its content it's valid
+                    if currBuff != "" and currBuff != "#INIT\n":
+                        #print ">%s<" % currBuff
+                        outBuff += currBuff + "\n"
+                currBuff = ""
+                nLine += 1
+                continue
+
+            # Check correct syntax ('TOKEN: VALUE')
+            correctLine = re.match(expr, line, re.I)
+
+            if not correctLine:
+                raise SyntaxError("Invalid syntax in (line %d)" % (nLine))
+
+            # Check indent in base level
+            if level == "BASE" and line.startswith("\t"):
+                raise SyntaxError("Unexpected indent (line %s)" % nLine)
+            elif not line.startswith("\t"):
+                level = "BASE"
+
+            # Inits a new request after a new line (or several)
+                logging.debug("%d: New request" % nLine)
+
+                # Reset control variables
+                level = "BASE"
+                hasUrl = False
+                hasCommands = False
+                startingAt = nLine
+                reqId = None
+                nRequest += 1
+
+            # Get the token and its value
+            token, value = correctLine.groups()
+            token = token.upper()
+
+            if level == "BASE":
+                if token in self.levelTokens:
+                    level = token
+                    hasCommands = True
+
+                elif token not in self.baseTokens:
+                    raise SyntaxError("Token %s not recognized in 'BASE' level (line %d)" % (token, nLine))
+
+                elif token == "URL":
+                    hasUrl = True
+                elif token == "ID":
+                    reqId = value
+                elif token == "TYPE":
+                    value = value.upper()
+                    if value not in self.reqTypes:
+                        raise SyntaxError("'%s' is not a valid type of request (line %d))" % (value, nLine))
+
+                hasCommands = True
+
+            elif level in self.levelTokens:
+                key = level if "-" not in level else level[:level.find("-")] # [EV]-EACH -> [EV]
+                if token not in self.inLevelTokens[key] and token not in self.inLevelTokens['ALL']:
+                    raise SyntaxError("Token %s not recognized in %s level (line %d)" % (token, level, nLine))
+
+
+                if token == "INVOKE" and not re.search("ID\s*:\s*%s\s*$" % value, content, re.M):
+                    logging.debug("ExprInvoke: %s" % ("ID\s*:\s*%s\s*$" % value))
+                    raise SyntaxError("There isn't a request with ID '%s' (line %d)" % (value, nLine))
+            
+            currBuff += line + "\n"
+            nLine += 1
+
+        print ">>>%s<<<" % outBuff.strip()
+        return outBuff.strip()
 
     # Load the data of the file specified
     def parse(self):
@@ -31,6 +155,9 @@ class Handler:
         f = open(self.fileName, "r")
         content = f.read()
         f.close()
+
+        # Check syntax errors
+        content = self.preParse(content)
 
         self.requests = []
 
