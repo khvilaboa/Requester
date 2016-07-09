@@ -3,7 +3,7 @@ from abc import ABCMeta, abstractmethod
 
 # filename='programLog.txt', 
 logging.basicConfig(level=logging.DEBUG, format=' %(asctime)s - %(levelname)s - %(message)s')
-logging.disable(logging.CRITICAL)
+#logging.disable(logging.CRITICAL)
 
 # ---------
 #  CLASSES
@@ -327,8 +327,11 @@ class RequestGroup:
         self.type = reqType
         self.eventActions = eventActions
 
+        self.uniqueId = 0
+
         # To store the url and params of the next request
         self.parsedUrl = self.url
+        #self.parsedParams = self.params
         self.parsedParams = urllib.urlencode(self.params) if params != None else None
 
         self.locals = {}
@@ -428,21 +431,54 @@ class RequestGroup:
         sources = {}   # dictionary with the sources, in the form { key: src }
 
         # Check if are special commands in the url
-        spec, src = self.getSourceFromCmd(self.url)
-        if src != None: 
-            sources[spec] = src
+        self.url, newSources = self.getSources(self.url)
+        sources.update(newSources)
 
         if self.params != None:
-            for k, v in self.params.iteritems():
+            self.params, newSources = self.getSources(self.params)
+            sources.update(newSources)
+
+            """for k, v in self.params.iteritems():
                 # Check if are special commands in the key
                 spec, src = self.getSourceFromCmd(k)
-                if src != None: sources[spec] = src
+                sources.update(newSources)
 
                 # Check if are special commands in the value
                 spec, src = self.getSourceFromCmd(v)
-                if src != None: sources[spec] = src
+                sources.update(newSources)"""
 
         return sources
+
+    def getSources(self, line):
+        matches = re.findall("(\[\[(\w*)\:([\w,]*)(->(\w*))?\]\])", line)
+        sources = {}
+
+        for mData in matches:
+            match, name, params, _, var = mData
+
+            if name == "FILE":
+                fileName = params
+                src = FileSource(fileName)
+            elif name == "SEQ":
+                seq = params
+                src = SeqSource(seq)
+
+            newSourceId = "[[SRC%d]]" % self.getUniqueId()
+            print type(mData), match
+            line = line.replace(match, newSourceId, 1)
+            sources[newSourceId] = src
+
+        logging.debug(matches)
+        logging.debug(sources)
+        logging.debug(line)
+
+        return line, sources
+
+
+    def getUniqueId(self):
+        currId = self.uniqueId
+        self.uniqueId += 1
+        return currId
 
     # Instance a source from the command given, of the form [[id:params]]
     def getSourceFromCmd(self, cmd):
@@ -599,7 +635,7 @@ class SeqSource(Source):
             raise StopIteration()
 
     def reset(self):
-        self.pointer = self.ini - self.pointer
+        self.pointer = self.ini - self.step
 
 
 # Iterate through all the combinations of the sources given
