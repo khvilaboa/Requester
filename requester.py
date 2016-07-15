@@ -370,6 +370,11 @@ class RequestGroup:
         if sources:
             for comb in SourceHandler(sources.values()):
 
+                # Fill sources variables
+                for src in sources.values():
+                    if src.destVar != None:
+                        self.locals[src.destVar] = src.lastValue
+
                 if "pre-each" in self.eventActions:
                     logging.debug("Executing preEachActions...")
                     self.executeEventActions("pre-each")
@@ -397,6 +402,9 @@ class RequestGroup:
                 if "post-each" in self.eventActions:
                     logging.debug("Executing postEachActions...")
                     self.executeEventActions("post-each")
+
+                # Remove the request-dependent information of the local variables 
+                del self.locals["code"]
         else:
             if self.action != None:
                 logging.debug("Executing main action (download)...")
@@ -462,6 +470,9 @@ class RequestGroup:
             elif name == "SEQ":
                 seq = params
                 src = SeqSource(seq)
+
+            if var:
+                src.destVar = var
 
             newSourceId = "[[SRC%d]]" % self.getUniqueId()
             print type(mData), match
@@ -529,8 +540,7 @@ class RequestGroup:
 
             # Translate vars
             action = self.parent.translateGlobals(action)
-            if event == "post":
-                action = self.translateLocals(action)
+            action = self.translateLocals(action)
 
             # Get command and its info
             name, value = self.getPair(action, ":")
@@ -577,6 +587,8 @@ class Source:
     __metaclass__ = ABCMeta
 
     def __iter__(self):
+        self.destVar = None
+        self.lastValue = None
         return self
 
     @abstractmethod
@@ -602,11 +614,11 @@ class FileSource(Source):
                 if self.data[i] == "":
                     del self.data[i]
                 i += 1
-            print self.data
 
         if self.pointer < len(self.data):
             val = self.data[self.pointer]
             self.pointer += 1
+            self.lastValue = val
             return val
         else:
             raise StopIteration()
@@ -629,8 +641,10 @@ class SeqSource(Source):
 
     def next(self):
         if self.pointer < self.fin:
+            val = str(self.pointer)
             self.pointer += self.step
-            return str(self.pointer)
+            self.lastValue = val
+            return val
         else:
             raise StopIteration()
 
