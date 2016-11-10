@@ -4,7 +4,7 @@ from collections import OrderedDict
 
 # filename='programLog.txt', 
 logging.basicConfig(level=logging.DEBUG, format=' %(asctime)s - %(levelname)s - %(message)s')
-#logging.disable(logging.CRITICAL)
+logging.disable(logging.CRITICAL)
 
 # ---------
 #  CLASSES
@@ -16,11 +16,12 @@ class Handler:
 	initTokens = ['INPUT']
 	baseTokens = ['ID', 'URL', 'PARAMS', 'ACTION', 'TYPE']
 	levelTokens = ['PRE', 'POST', 'PRE-EACH', 'POST-EACH']
-	inLevelTokens = {'ALL': ['OUTPUT', 'DELAY'], 'PRE': [], 'POST': ['GETVAR', 'INVOKE']}
+	inLevelTokens = {'ALL': ['OUTPUT', 'DELAY', 'END'], 'PRE': [], 'POST': ['GETVAR', 'INVOKE']}
 
 	# Request types
 	reqTypes = ['AUTO', 'CALLABLE']
 	reqActions = ['REQUEST', 'DOWNLOAD']
+	reqEnds = ['ITER', 'REQUEST', 'SCRIPT']
 
 	def __init__(self, fileName):
 		self.fileName = fileName
@@ -59,14 +60,11 @@ class Handler:
 		content = f.read()
 		f.close()
 
-		# Check syntax errors
-		# content = self.preParse(content)
-
 		# Parsed data
 		inLevelData = {}  # For store the commands of the events (PRE, POST...)
 		
 		# Parsing vars
-		numLine = 1
+		numLine = 0
 		reqStartLine = 1
 		numRequest = 0
 		
@@ -80,8 +78,9 @@ class Handler:
 		hasRequest = False  # For the last verification
 		
 		for inputLine in content.split("\n"):
-			#print "---%s---" % inputLine
-		
+			numLine += 1
+			print "---%s---" % inputLine
+			
 			# Check if it's the initial (configuration) region 
 			if re.match("^/s*# ?INIT/s*$", inputLine):
 				if numRequest != 0:
@@ -89,9 +88,11 @@ class Handler:
 				initRequest = True
 				continue
 			
-			if re.match("^/s*#.*$", inputLine):
+			# Check if it's a comment
+			if re.match("^[ \t]*#.*$", inputLine):
 				continue
 			
+			# Init configurations
 			if initRequest:
 				atrName, atrValue = self.getPair(inputLine, ":")
 				atrName = atrName.upper()
@@ -102,13 +103,15 @@ class Handler:
 				if atrName == "INPUT":
 					for k in atrValue.replace(" ", "").split(","):
 						self.inputs[k] = raw_input(k + ": ")
-						
+			
+			# Check if it's a blank line (points the start of a new request)
 			if re.match("^[ \t]*$", inputLine):
 				newRequest = True
 				continue
 				
+			# If comes a new request save the previous one and reset the variables
 			if newRequest:
-				# Check previous request
+				# Check that there were more requests
 				if numRequest != 0:
 					addRequest(id, url, method, params, action, type, inLevelData)
 					
@@ -129,8 +132,10 @@ class Handler:
 			atrName, atrValue = self.getPair(inputLine, ":")
 			atrName = atrName.upper()
 
+			# Determine the level of indentation (based on tabs)
 			curLevel = len(re.search("^(\t*)", inputLine).group(1))
-			#print lastLevel, curLevel, inputLine
+			
+			# Starts an event region
 			if curLevel == 0 and atrName in self.levelTokens:
 				if atrValue != "":
 					raise SyntaxError("\nLine %d: %s doesn't expect a value.\n" % (numLine, atrName))
@@ -143,18 +148,23 @@ class Handler:
 				
 				inLevelData[curLevelName] = []
 				continue
-			if expectIncLevel and curLevel-lastLevel != 1:
+			elif expectIncLevel and curLevel-lastLevel != 1:
 				raise SyntaxError("\nLine %d: Indentation error.\n" % numLine)
-			if curLevel > 0:
+			elif curLevel > 0:
 				# X-EACH -> X
 				genLevelName = curLevelName if not "-" in curLevelName else curLevelName[:curLevelName.find("-")]
+				
 				if atrName not in self.inLevelTokens[genLevelName] and atrName not in self.inLevelTokens["ALL"]:
 					raise SyntaxError("\nLine %d: Unrecognized attribute (%s).\n" % (numLine, atrName))
 				
 				# Specific filters
 				if atrName == "DELAY" and not re.match("^[\d]*(.[\d]+)?( ?(ms|s))?$", atrValue):
-					raise SyntaxError("\nLine %d: Unexpected DELAY value" % nLine)
-					
+					raise SyntaxError("\nLine %d: Unexpected DELAY value" % numLine)
+				if atrName == "END":
+					if atrValue.upper() not in self.reqEnds:
+						raise SyntaxError("\nLine %d: 'END' must be ITER, REQUEST OR SCRIPT.\n" % numLine)
+					if atrValue == "ITER" and not curLevelName.upper().endswith("-EACH"):
+						raise SyntaxError("\nLine %d: 'END: ITER' is only allowed in 'PRE-EACH' and 'POST-EACH' events" % numLine)
 				inLevelData[curLevelName].append((atrName, atrValue))
 				continue
 				
@@ -181,7 +191,6 @@ class Handler:
 			else:
 				raise SyntaxError("\nLine %d: Attribute '%s' not recognized.\n" % (numLine, atrName))
 			
-			numLine += 1
 		
 		if hasRequest:
 			addRequest(id, url, method, params, action, type, inLevelData)
@@ -202,9 +211,7 @@ class Handler:
 	def sendRequests(self):
 		for req in self.requests:
 			print "Executing: ", req
-			url, method, params, action, inLevelData = self.requests[req]
-			r = RequestGroup(self, url, method, params, action, inLevelData)
-			r.execute()
+			self.executeRequest(*self.requests[req])
 
 	def getInputs(self):
 		return self.inputs
@@ -212,11 +219,17 @@ class Handler:
 	def executeById(self, reqId):
 		for req in self.invRequests:
 			if req.upper() == reqId.upper():
-				url, method, params, action, inLevelData = self.invRequests[req]
-				r = RequestGroup(self, url, method, params, action, inLevelData)
-				r.execute()
-		print "Invoke ID not found"
+				self.executeRequest(*self.invRequests[req])
 
+	def executeRequest(self, url, method, params, action, inLevelData, locals = {}):
+		r = RequestGroup(self, url, method, params, action, inLevelData)
+	
+		try:
+			r.execute()
+		except StandardError as e:
+			if str(e) != "END_REQUEST":
+				print e, type(e)
+				raise StandardError(e)
 
 # Identifies a group of related requests
 class RequestGroup:
@@ -250,37 +263,42 @@ class RequestGroup:
 				for src in sources.values():
 					if src.destVar != None:
 						self.locals[src.destVar] = src.lastValue
+		
+				try:
+					if "PRE-EACH" in self.eventActions:
+						logging.debug("Executing preEachActions...")
+						self.executeEventActions("PRE-EACH")
 
-				if "PRE-EACH" in self.eventActions:
-					logging.debug("Executing preEachActions...")
-					self.executeEventActions("PRE-EACH")
+					urlWithParams = self.getUrlWithParams()
 
-				urlWithParams = self.getUrlWithParams()
+					# Replace the data given in the sources in the url and params
+					for k, v in zip(sources.keys(), comb):
+						urlWithParams = urlWithParams.replace(k, v)
 
-				# Replace the data given in the sources in the url and params
-				for k, v in zip(sources.keys(), comb):
-					urlWithParams = urlWithParams.replace(k, v)
+					self.parsedUrl, self.parsedParams = self.getPair(urlWithParams, "?")
 
-				self.parsedUrl, self.parsedParams = self.getPair(urlWithParams, "?")
+					logging.debug("Request details:")
+					logging.debug(self)
 
-				logging.debug("Request details:")
-				logging.debug(self)
+					if self.action == "DOWNLOAD":
+						logging.debug("Executing action (download)...")
+						downAction = DownloadAction(urlWithParams)
+						downAction.execute()
+					else:
+						logging.debug("Executing main action (request)...")
+						self.parsedUrl = self.translateLocals(self.parent.translateGlobals(self.parsedUrl))
+						self.send()
 
-				if self.action == "DOWNLOAD":
-					logging.debug("Executing action (download)...")
-					downAction = DownloadAction(urlWithParams)
-					downAction.execute()
-				else:
-					logging.debug("Executing main action (request)...")
-					self.parsedUrl = self.translateLocals(self.parent.translateGlobals(self.parsedUrl))
-					self.send()
-
-				if "POST-EACH" in self.eventActions:
-					logging.debug("Executing postEachActions...")
-					self.executeEventActions("POST-EACH")
-
-				# Remove the request-dependent information of the local variables 
-				del self.locals["code"]
+					if "POST-EACH" in self.eventActions:
+						logging.debug("Executing postEachActions...")
+						self.executeEventActions("POST-EACH")
+				except StandardError as e:
+					if str(e) != "END_ITER":
+						raise StandardError(e)
+				finally:
+					# Remove the request-dependent information of the local variables 
+					if "code" in self.locals:
+						del self.locals["code"]
 		else:
 			if self.action == "DOWNLOAD":
 				logging.debug("Executing action (download)...")
@@ -318,7 +336,7 @@ class RequestGroup:
 			if self.parsedParams: url += "?" + self.parsedParams
 			self.locals["code"] = urllib2.urlopen(url).read()
 		elif self.method == "POST":
-			self.locals["code"] = urllib2.urlopen(url, urllib.urlencode(self.parsedParams)).read()
+			self.locals["code"] = urllib2.urlopen(url, self.parsedParams).read()
 			
 	# ------------------------------------------------------------------
 			
@@ -370,6 +388,7 @@ class RequestGroup:
 
 			name, value = action
 			name = name.upper()
+			value = value.upper()
 			
 			# Translate the value
 			value = self.parent.translateGlobals(value)
@@ -382,6 +401,11 @@ class RequestGroup:
 				num, _, unit = re.search("([\d.]+)( ?(ms|s))?", value).groups()
 				numSec = float(num) / (1 if unit == "s" else 1000)
 				time.sleep(numSec)
+			elif name == "END":
+				if value == "SCRIPT":
+					sys.exit(0)
+				else:
+					raise StandardError("END_%s" % value)
 
 			if event.startswith("POST"):  # Only post-actions
 				if name == "GETVAR":
@@ -399,10 +423,6 @@ class RequestGroup:
 					logging.debug("INVOKE: Trying to execute the request with ID '%s'..." % value)
 					executed = self.parent.executeById(value)
 
-					if executed:
-						logging.debug("INVOKE: Executed correctly")
-					else:
-						logging.debug("INVOKE: ID not found")
 	
 	def translateLocals(self, s):
 		for k, v in self.locals.iteritems():
